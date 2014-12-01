@@ -1,0 +1,420 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title><![CDATA[JSBear]]></title>
+  
+  <link href="/jsbear/atom.xml" rel="self"/>
+  <link href="http://jsbear.baidu.com/"/>
+  <updated>2014-12-01T11:08:12.661Z</updated>
+  <id>http://jsbear.baidu.com/</id>
+  
+  <author>
+    <name><![CDATA[JSBear Team]]></name>
+    
+  </author>
+  
+  <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[JavaScript的基准测试]]></title>
+    <link href="http://jsbear.baidu.com/2014/11/27/javascript-benchmarking/"/>
+    <id>http://jsbear.baidu.com/2014/11/27/javascript-benchmarking/</id>
+    <published>2014-11-27T10:22:07.000Z</published>
+    <updated>2014-12-01T11:07:36.393Z</updated>
+    <content type="html"><![CDATA[<blockquote>
+<p>审阅校对：李叶，刘凯</p>
+<p>原文：<a href="https://mathiasbynens.be/notes/javascript-benchmarking" target="_blank" rel="external">Bulletproof JavaScript benchmarks</a></p>
+</blockquote>
+<p>做JavaScript的基准测试并没有想的那么简单。即使不考虑浏览器差异所带来的影响，也还有很多坑——甚至陷阱——要注意。</p>
+<a id="more"></a>
+
+<p>这是我创建了<a href="http://jsperf.com/" target="_blank" rel="external">jsPerf</a>的一个原因，一个你可以轻松创建并分享各种代码片段对比结果的简单工具。用起来非常省事，只需把想要测试的代码录入然后jsPerf会为你创建好可以跨平台跑起来的测试用例。</p>
+<p>内部实现上，最开始jsPerf用的是一个基于<a href="http://www.broofa.com/Tools/JSLitmus/" target="_blank" rel="external">JSLitmus</a>的基准测试库，我将它称作<a href="http://benchmarkjs.com/" target="_blank" rel="external">Benchmark.js</a>。后续又往里面添加了更多的特性，最近，<a href="http://allyoucanleet.com/" target="_blank" rel="external">John-David Dalton</a>干脆将这个库彻底重写了一遍。所以现在Benchmark.js已经比之前好很多了。</p>
+<p>本文对JavaScript基准测试的编写和运行有一定的参考意义。</p>
+<h2 id="基准测试的类型">基准测试的类型</h2>
+<p>有很多方法可以测试一段JavaScript代码的性能。最常见的做法是类似下面这样的：</p>
+<h3 id="方案A">方案A</h3>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> totalTime,</div><div class="line">    start = <span class="keyword">new</span> <span class="built_in">Date</span>,</div><div class="line">    iterations = <span class="number">6</span>;</div><div class="line"><span class="keyword">while</span> (iterations--) {</div><div class="line">  <span class="comment">// 被测试的代码</span></div><div class="line">}</div><div class="line"><span class="comment">// totalTime → 运行该测试代码6次需要的时间（单位：毫秒）</span></div><div class="line">totalTime = <span class="keyword">new</span> <span class="built_in">Date</span> - start;</div></pre></td></tr></table></figure>
+
+<p>这种方案将被测试的代码循环执行多次直到预设值（本例为6次）。最后用结束时的时间减去开始的时间，得到运行的总时间。</p>
+<p> 方案A被用于<a href="https://github.com/kamicane/slickspeed/" target="_blank" rel="external">SlickSpeed</a>, <a href="https://github.com/phiggins42/taskspeed" target="_blank" rel="external">Taskspeed</a>, <a href="http://www2.webkit.org/perf/sunspider/sunspider.html" target="_blank" rel="external">SunSpider</a>, 和 <a href="http://krakenbenchmark.mozilla.org/" target="_blank" rel="external">Kraken</a>这些流行的基准测试库中。</p>
+<h4 id="缺憾">缺憾</h4>
+<p> 鉴于现在的设备和浏览器运行得越来越快，这种将代码运行固定次数的测试方法有越来越大的概率会得到一个0ms的时间差结果，显然这样的结果是毫无意义的。</p>
+<h3 id="方案B">方案B</h3>
+<p>另一种方案是计算固定时间内进行了多少运算量。较之前的做法，这回你不用指定一个固定的循环次数了。</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> hz,</div><div class="line">    period,</div><div class="line">    startTime = <span class="keyword">new</span> <span class="built_in">Date</span>,</div><div class="line">    runs = <span class="number">0</span>;</div><div class="line"><span class="keyword">do</span> {</div><div class="line">  <span class="comment">// 被测试的代码</span></div><div class="line">  runs++;</div><div class="line">  totalTime = <span class="keyword">new</span> <span class="built_in">Date</span> - startTime;</div><div class="line">} <span class="keyword">while</span> (totalTime &lt; <span class="number">1000</span>);</div><div class="line"></div><div class="line"><span class="comment">// 将毫秒转为秒</span></div><div class="line">totalTime /= <span class="number">1000</span>;</div><div class="line"></div><div class="line"><span class="comment">// period → 单位运算的耗时</span></div><div class="line">period = totalTime / runs;</div><div class="line"></div><div class="line"><span class="comment">// hz → 单位时间（1秒）内进行的运算量</span></div><div class="line">hz = <span class="number">1</span> / period;</div><div class="line"></div><div class="line"><span class="comment">// 上面两步可以简写如下：</span></div><div class="line"><span class="comment">// hz = (runs * 1000) / totalTime;</span></div></pre></td></tr></table></figure>
+
+<p>将测试代码一直循环运行直到总耗时<code>totalTime</code>大于等于1000毫秒，也就是1秒种。</p>
+<p>方案B 用于<a href="http://dromaeo.com/" target="_blank" rel="external">Dromaeo</a>和<a href="http://code.google.com/apis/v8/benchmarks.html" target="_blank" rel="external">V8 Benchmark Suite</a>这两个库。</p>
+<h4 id="不足">不足</h4>
+<p>由于有垃圾回收、（运行时的）引擎对代码的动态优化以及其他进程等的影响，此方案在重复进行测试时得到的结果不尽相同。为了得到更精确的测试结果，需要多次测试取均值。而上面提到的V8库只会对测试运行一次，Dromaeo则会运行5次，但其实还可以做得更彻底以获取更加精准的结果。一个可行的途径就是想办法将目前的测试时间由1000毫秒压缩到50毫秒，当然前提是系统提供给我们一个绝对精确的时钟，这能保证时间尽可能多地用于运行测试代码（而不会过多地被操作系统的中间停顿浪费掉）。</p>
+<h3 id="方案C">方案C</h3>
+<p>JSLitmus 这个库结合了前面两种方案的优点。采用方案A 来将测试代码运行<code>n</code>次，同时动态调整这个<code>n</code>值以保证测试能够进行到一个最小的时长，也就是方案B所描述的那样。</p>
+<h4 id="症结">症结</h4>
+<p>JSLitmus 规避了方案A的缺点但同时引入了方案B的不足之处。为了进一步提高测试的准确率，JSLitmus 将结果进行了较准，取出3次空测试（译注：方案 B 的问题在于有很多跑非测试代码的开销，这里通过跑空测试得到这部分时间从结果中移除 ）中运行最快的一次，再将每次基准测试的结果减去这个最快值。不幸的是这种做法为了规避B方案的毛病（译注：B方案需要运行多次以得到更多采样集合以取均值，换句话说要得到越准确的结果就要耗费越多的时间）反而使结果更不可靠了，因为取3次中最快的一次本身就不符合统计规律。尽管JSLitmus可以多次运行这样的基准测试，将较准后的均值与每次测试结果的均值进行差额运算，但这样得到的最终结果其身上的误差已经足够掩盖之前我们为了提高准确率而做的任何努力了。</p>
+<h3 id="方案D">方案D</h3>
+<p>前面三种方案的短肋可以通过方法转编（<code>function compilation</code> 编译转化之意，区别于传统编译）和循环展开(loop unrolling)来避免。</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">function</span> <span class="title">test</span><span class="params">()</span> </span>{</div><div class="line">  x == y;</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">while</span> (iterations--) {</div><div class="line">  test();</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// …将会编译转化为 →</span></div><div class="line"><span class="keyword">var</span> hz,</div><div class="line">    startTime = <span class="keyword">new</span> <span class="built_in">Date</span>;</div><div class="line"></div><div class="line">x == y;</div><div class="line">x == y;</div><div class="line">x == y;</div><div class="line">x == y;</div><div class="line">x == y;</div><div class="line"><span class="comment">// …</span></div><div class="line"></div><div class="line">hz = (runs * <span class="number">1000</span>) / (<span class="keyword">new</span> <span class="built_in">Date</span> - startTime);</div></pre></td></tr></table></figure>
+
+<p>这种做法将测试代码<a href="http://en.wikipedia.org/wiki/Loop_unwinding" target="_blank" rel="external">变成了展开的形式</a>，避免了循环和较准工作(译注：没有了循环也就无需统计单位时间内的运算量了)。</p>
+<h4 id="问题">问题</h4>
+<p>然而，它还是有不足之处的。将函数转编会消耗大量内存同时也把CPU拖慢。当你把一个测试跑上几百万次时，可以想象到会创建大量的字符串和转编无数的函数。</p>
+<p>这还不算，因为一个函数完全有可能在遇到<code>return</code>后提前结束执行。所以如果测试中函数在第3行就返回了，将循环展开成上百万的代码就显得毫无意义。看来检测这些可能的提前退出还是很有必要的，然后回归到使用<code>while</code>语句（也就是方案A的做法）加上对循环结果的较准。</p>
+<h3 id="函数体的提取">函数体的提取</h3>
+<p>在Benchmark.js的实现中，使用了一个稍微不同的做法。你可以认为它结合了方案A,B,C还有D的长处。考虑到内存因素，我们没有将循环展开。为了控制住增大结果误差的因素，同时又让测试代码可以使用较为自然的实现和变量，我们将每个测试代码的函数体提取出来。譬如，当用下面的代码进行测试时：</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> x = <span class="number">1</span>,</div><div class="line">    y = <span class="string">'1'</span>;</div><div class="line"></div><div class="line"><span class="function"><span class="keyword">function</span> <span class="title">test</span><span class="params">()</span> </span>{</div><div class="line">  x == y;</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">while</span> (iterations--) {</div><div class="line">  test();</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// …转会转编为 →</span></div><div class="line"></div><div class="line"><span class="keyword">var</span> x = <span class="number">1</span>,</div><div class="line">    y = <span class="string">'1'</span>;</div><div class="line"><span class="keyword">while</span> (iterations--) {</div><div class="line">  x == y;</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如此一来，Benchmark.js 使用一个与 JSLitmus近似的技术：将提取出来的函数体放到一个循环中（这是方案A的做法），重复执行直到达到一个最小的时限（这是方案B），最后重复整个流程得到有统计学意义的结果。</p>
+<h2 id="注意事项">注意事项</h2>
+<h3 id="有偏差的毫秒时钟">有偏差的毫秒时钟</h3>
+<p>某些浏览器与操作系统的组合中，由于<a href="http://msdn.microsoft.com/en-us/windows/hardware/gg463347.aspx" target="_blank" rel="external">种种</a><a href="http://alivebutsleepy.srnet.cz/unreliable-system-nanotime/" target="_blank" rel="external">因素</a>存在时钟不准的情况。</p>
+<p>例如：</p>
+<blockquote>
+<p>Windows XP开机后，程序执行的时钟周期为 10毫秒，这在其他操作系统中一般为15毫秒。意思就是每隔10毫秒操作系统会接收到来自硬件（译注：也就是CPU的时钟系统）的一次中断。</p>
+</blockquote>
+<p>一些很老的浏览器（IE或者火狐2）严重依赖操作系统的时钟，也就是说每次你调用<code>new Date().getTime()</code>，它都直接从系统那里去拿这个时间。很显然，如果内部系统的时间都要间隔10毫秒或者15毫秒才更新一次，那测试结果会受很大影响，准确性大大降低。这个问题是需要解决的。</p>
+<p>值得庆幸的是，JavaScript是可以<a href="https://mathiasbynens.be/demo/javascript-timers" target="_blank" rel="external">拿到最小的时间度量单位</a>的。这之后，我们可以通过<a href="http://spiff.rit.edu/classes/phys273/uncert/uncert.html" target="_blank" rel="external">数学方式</a>将测试结果的不确定性降低到只有1%。为此，我们将这个最小时间度量单位除以2以得到这个<em>不准确度</em>。假设我们在XP上用IE6，此种情况下最小的度量单位是15毫秒。这个不确定率就为<code>15ms/2=7.5ms</code>。然后我们想控制结果的误差到1%，于是乎我们将刚才得到的不确定性值除以0.01，就得到了达到测试要求需要的最小测试时限为：<code>7.5/0.01=750ms</code>。</p>
+<h3 id="其他时钟">其他时钟</h3>
+<p>当启用<code>--enable-benchmarking</code> 标志后，Chrome和Chromium会暴露出一个叫做<code>chrome.Interval</code>的方法，可以用它作为一个高精度的时钟使用。</p>
+<p>在编写Benchmark.js库时， John-David Dalton 经过一番折腾后将Java里这个纳秒级的时钟通过一个小的Java applet插件暴露到了JavaScript中。</p>
+<p>使用更高精度的时钟可以缩短测试周期，相应地可以跑更多测试样本，从而得到一个误差更小的测试结果。</p>
+<h3 id="Firebug_会禁用火狐的_JIT">Firebug 会禁用火狐的 JIT</h3>
+<p>启用Firebug会禁用火狐高性能的实时(just-in-time <a href="http://en.wikipedia.org/wiki/Just-in-time_compilation" target="_blank" rel="external">JIT</a>)本地代码编译，然后你的代码会跑在普通的JavaScript解释器里面。这将会比原先慢很多。所以在跑基准测试时千万记得关掉Firebug。</p>
+<p>其他浏览器的元素审查工具比如WebKit的<code>Web Inspector</code>或者欧朋浏览器的<code>Dragonfly</code>在开启时也有类似问题，尽管相比于上面的情况会小很多。所以在跑测试时最好还是关掉这些，或多或少还是会影响测试结果的。</p>
+<h3 id="浏览器缺陷和特性">浏览器缺陷和特性</h3>
+<p>内部实现中使用了某些循环机制的基准测试容易受到一些浏览器本身缺陷的影响，比如像最近IE9的<a href="http://www.zdnet.com/blog/bott/ie9-takes-top-benchmark-prize-no-cheating-involved/2671" target="_blank" rel="external">dead-code-removal</a>展示的那样。<a href="https://bugzilla.mozilla.org/show_bug.cgi?id=509069" target="_blank" rel="external">火狐<code>TraceMonkey</code> 引擎</a>的一个bug，还有欧朋11 <a href="http://jsperf.com/jquery-css3-not-vs-not" target="_blank" rel="external">对<code>querySelectorAll</code>结果的缓存</a>都会影响到测试结果。这些都是在进行测试是需要注意的。</p>
+<h3 id="统计学的重要性">统计学的重要性</h3>
+<p>大多数的基准测试/测试代码给出的结果并且没有严格符合统计学要求。John Resig（译注：jQuery原始作者）在他早前的一篇文章「<a href="http://ejohn.org/blog/javascript-benchmark-quality/" target="_blank" rel="external">JavaScript 基准测试的质量</a>」中有提到。简单来说，就是应该尽量考虑到每个测试结果的误差并去减小它。大样本容量的测试代码运行能起到减少误差的作用。</p>
+<h3 id="跨浏览器的测试">跨浏览器的测试</h3>
+<p>如果你想在不同浏览器中进行测试且想得到较可靠的结果，一定要在真实的浏览器中测试。不要依赖于IE自带的兼容模式，此模式跟他<a href="http://jsperf.com/join-concat#comments" target="_blank" rel="external">所模拟的版本是存在实质性差异</a>的。</p>
+<p>还有就是除了跟大多其他浏览器一样会限制脚本的时间外，IE（8及以下）还限制了代码的指令数不能超过5百万。事实上以现在CPU的吞吐能力，这样的数量级处理起来只是半秒钟的事情。如果你配置确实过硬，跑起来倒也没什么只是IE会给出一个<code>Script Warning</code>的警告，这种情况下你可以通过修改注册表来增大这个数量限制。幸运的是微软还提供了一个<a href="http://go.microsoft.com/?linkid=9729250" target="_blank" rel="external">修复助手的程序</a>，你只需要运行即可，比修改注册表方便多了。更可喜的是，IE9中这个逗逼的限制被移除了。</p>
+<h2 id="总结">总结</h2>
+<p>无论你只是跑了一些测试，或者写一些用例，抑或正在自己写一个基准测试库，关于JavaScript基准测试的奥义远比你看到得要多（译注：就是水很深，并不是跑个分那么简单）。Benchmark.js和jsPerf<a href="https://github.com/bestiejs/benchmark.js/commits/master" target="_blank" rel="external">每周都有更新</a>，包含bug修复，新功能添加和一些提升准确率的技巧。但愿主流浏览器也能够为此做些努力吧…</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<blockquote>
+<p>审阅校对：李叶，刘凯</p>
+<p>原文：<a href="https://mathiasbynens.be/notes/javascript-benchmarking" target="_blank" rel="external">Bulletproof JavaScript benchmarks</a></p>
+</blockquote>
+<p>做JavaScript的基准测试并没有想的那么简单。即使不考虑浏览器差异所带来的影响，也还有很多坑——甚至陷阱——要注意。</p>
+]]>
+    
+    </summary>
+    
+      <category term="javascript" scheme="http://jsbear.baidu.com/tags/javascript/"/>
+    
+      <category term="性能" scheme="http://jsbear.baidu.com/tags/%E6%80%A7%E8%83%BD/"/>
+    
+      <category term="benchmark" scheme="http://jsbear.baidu.com/tags/benchmark/"/>
+    
+      <category term="译文" scheme="http://jsbear.baidu.com/categories/%E8%AF%91%E6%96%87/"/>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[延迟求值-如何让Lo-Dash再提速x100?]]></title>
+    <link href="http://jsbear.baidu.com/2014/11/14/lazy-evaluation/"/>
+    <id>http://jsbear.baidu.com/2014/11/14/lazy-evaluation/</id>
+    <published>2014-11-14T09:57:03.000Z</published>
+    <updated>2014-12-01T11:07:36.393Z</updated>
+    <content type="html"><![CDATA[<blockquote>
+<p>审阅校对：李叶</p>
+<p>「注释」作者在本文里没有说明这么一个事实：<br>目前的版本<code>Lo-Dash v2.4.1</code>并没有引入延迟求值的特性，<code>Lo-Dash 3.0.0-pre</code>中部分方法进行了引入，比如<code>filter()</code>,<code>map()</code>,<code>reverse()</code>。</p>
+<p>原文：<a href="http://filimanjaro.com/blog/2014/introducing-lazy-evaluation" target="_blank" rel="external">How to Speed Up Lo-Dash ×100? Introducing Lazy Evaluation</a></p>
+</blockquote>
+<p>我时常觉得像<code>Lo-Dash</code>这样优秀的库已经无法再优化了。它整合了各种<a href="https://www.youtube.com/watch?v=NthmeLEhDDM" target="_blank" rel="external">奇技淫巧</a>已经将JavaScript的性能开发到了极限。它使用了最快速的语句，优化的算法，甚至还会在发版前做性能测试以保证回归没问题。</p>
+<a id="more"></a>
+
+<h2 id="延迟求值">延迟求值</h2>
+<p>但似乎我错了-还可以让<code>Lo-Dash</code>有明显的提升。只需将关注点从细微的优化转移到算法上来。譬如，在一次循环中我们往往会去优化循环体：</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> len = getLength();</div><div class="line"><span class="keyword">for</span>(<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; len; i++) {</div><div class="line">    operation(); <span class="comment">// &lt;- 10ms - 如何做到 9ms?!</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>但针对循环体的优化往往很难，很多时候已经到极限了。相反，优化<code>getLength()</code> 函数尽量减少循环次数变得更有意义了。你想啊，这个数值越小，需要循环的<code>10ms</code>就越少。</p>
+<p>这便是<code>Lo-Dash</code>实现延迟求值的大致思路。重要的是减少循环次数，而不是每次循环的时间。让我们考察下面的例子：</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">function</span> <span class="title">priceLt</span><span class="params">(x)</span> </span>{</div><div class="line">   <span class="keyword">return</span> <span class="function"><span class="keyword">function</span><span class="params">(item)</span> </span>{ <span class="keyword">return</span> item.price &lt; x; };</div><div class="line">}</div><div class="line"><span class="keyword">var</span> gems = [</div><div class="line">   { name: <span class="string">'Sunstone'</span>, price: <span class="number">4</span> }, { name: <span class="string">'Amethyst'</span>, price: <span class="number">15</span> },</div><div class="line">   { name: <span class="string">'Prehnite'</span>, price: <span class="number">20</span>}, { name: <span class="string">'Sugilite'</span>, price: <span class="number">7</span>  },</div><div class="line">   { name: <span class="string">'Diopside'</span>, price: <span class="number">3</span> }, { name: <span class="string">'Feldspar'</span>, price: <span class="number">13</span> },</div><div class="line">   { name: <span class="string">'Dioptase'</span>, price: <span class="number">2</span> }, { name: <span class="string">'Sapphire'</span>, price: <span class="number">20</span> }</div><div class="line">];</div><div class="line"></div><div class="line"><span class="keyword">var</span> chosen = _(gems).filter(priceLt(<span class="number">10</span>)).take(<span class="number">3</span>).value();</div></pre></td></tr></table></figure>
+
+<p>我们只想取出3个价格低于10元的小球。通常情况下我们先过滤整个数据源，最后从所有小于10的元素里返回前面三个即可。</p>
+<p><img src="/jsbear/asset/posts/2014-11-14-lazy-evaluation/lodash-naive.gif" alt="lo-dash naive"></p>
+<p>但这种做法并不优雅。它处理了全部8个数据，但其实只需要处理前面5个我们就能拿到结果了。同样为了得到正确的结果，延迟求值则只处理最少的元素。优化后如下图所示：</p>
+<p><img src="/jsbear/asset/posts/2014-11-14-lazy-evaluation/grafika.gif" alt="lo-dash naive"></p>
+<p>一下子就获得了37.5%的性能提升。很容易找出提升X1000+的例子。比如：</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> phoneNumbers = [<span class="number">5554445555</span>, <span class="number">1424445656</span>, <span class="number">5554443333</span>, … ×<span class="number">99</span>,<span class="number">999</span>];</div><div class="line"></div><div class="line"><span class="comment">// 取出100个含 `55` 的号码</span></div><div class="line"><span class="function"><span class="keyword">function</span> <span class="title">contains55</span><span class="params">(str)</span> </span>{</div><div class="line">    <span class="keyword">return</span> str.contains(<span class="string">"55"</span>); </div><div class="line">};</div><div class="line"></div><div class="line"><span class="keyword">var</span> r = _(phoneNumbers).map(<span class="built_in">String</span>).filter(contains55).take(<span class="number">100</span>);</div></pre></td></tr></table></figure>
+
+<p>这个例子中<code>map</code>和<code>filter</code> 将遍历99999 个元素，但很有可能我们只需处理到1000个元素的时候就已经拿到想要的结果了。这回性能的提升就太明显了（<a href="http://jsperf.com/lazy-demo" target="_blank" rel="external">benchmark</a>）：</p>
+<p><img src="/jsbear/asset/posts/2014-11-14-lazy-evaluation/benchmark.jpg" alt="benchmark"></p>
+<h2 id="流水线">流水线</h2>
+<p>延迟求值同时带来了另一个好处，我称之为“流水线”。要旨就是避免产生中间数组，而是对一个元素一次性进行完所有操作。下面用代码说话：</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> result = _(source).map(func1).map(func2).map(func3).value();</div></pre></td></tr></table></figure>
+
+<p>上面看似优雅的写法在原始的<code>Lo-Dash</code>里会转换成下面的样子（直接求值）：</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> result = [], temp1 = [], temp2 = [], temp3 = [];</div><div class="line"></div><div class="line"><span class="keyword">for</span>(<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; source.length; i++) {</div><div class="line">   temp1[i] = func1(source[i]);</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">for</span>(i = <span class="number">0</span>; i &lt; source.length; i++) {</div><div class="line">   temp2[i] = func2(temp1[i]);</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">for</span>(i = <span class="number">0</span>; i &lt; source.length; i++) {</div><div class="line">   temp3[i] = func3(temp2[i]);</div><div class="line">}</div><div class="line">result = temp3;</div></pre></td></tr></table></figure>
+
+<p>当引入了延迟求值后，代码大致就成这样的了：</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> result = [];</div><div class="line"><span class="keyword">for</span>(<span class="keyword">var</span> i = <span class="number">0</span>; i &lt; source.length; i++) {</div><div class="line">   result[i] = func3(func2(func1(source[i])));</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>减少不必要的中间变量多少会带来性能上的提升，特别是在数据源特别巨大，内存又吃紧的情况下。</p>
+<h2 id="延迟执行">延迟执行</h2>
+<p>延迟求值带来的另一个好处是延迟执行。无论何时你写了段链式代码，只有在显式地调用了<code>.value()</code>后才会真正执行。这样一来，在数据源需要异步去拉取的情况下，可以保证我们处理的是最新的数据。</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> wallet = _(assets).filter(ownedBy(<span class="string">'me'</span>))</div><div class="line">                      .pluck(<span class="string">'value'</span>)</div><div class="line">                      .reduce(sum);</div><div class="line"></div><div class="line">$json.get(<span class="string">"/new/assets"</span>).success(<span class="function"><span class="keyword">function</span><span class="params">(data)</span> </span>{</div><div class="line">    assets.push.apply(assets, data); <span class="comment">// 更新数据源</span></div><div class="line">    wallet.value(); <span class="comment">// 返回的结果是最新的</span></div><div class="line">});</div></pre></td></tr></table></figure>
+
+<p>而且这种机制在某些情况下也会提高执行效果。我们可以老早发送一个请求获取数据，然后指定一个精确的时间来执行。</p>
+<h2 id="后记">后记</h2>
+<p>延迟求值并且不算什么新技术。在一些库中已经在使用了，比如<a href="http://en.wikipedia.org/wiki/Language_Integrated_Query" target="_blank" rel="external">LINQ</a>,<a href="http://danieltao.com/lazy.js/" target="_blank" rel="external">Lazy.js</a>还有其他等等。那么问题来了，<code>Lo-Dash</code>存在的意义是啥？我想就是你仍然可以使用你熟悉的<code>Underscore</code> 接口但享受一个更高效的底层实现，不需要额外的学习成本，代码上面也不会有大的变动，只需稍加修改。</p>
+<blockquote>
+<p>译注：对于<code>lazy evaluation</code> 与<code>deferred execution</code> 中<code>lazy</code> 与<code>deferred</code> 的区分，在翻译时找不到恰当的区分。前者用主流使用的「延迟」会更易懂，而后者同时也译为「延迟」, 但他们在记性上还是存在一定差别的，具体的讨论可见<a href="https://github.com/tbfe/translation/pull/2#discussion_r20362267" target="_blank" rel="external">这里</a>。</p>
+</blockquote>
+]]></content>
+    <summary type="html">
+    <![CDATA[<blockquote>
+<p>审阅校对：李叶</p>
+<p>「注释」作者在本文里没有说明这么一个事实：<br>目前的版本<code>Lo-Dash v2.4.1</code>并没有引入延迟求值的特性，<code>Lo-Dash 3.0.0-pre</code>中部分方法进行了引入，比如<code>filter()</code>,<code>map()</code>,<code>reverse()</code>。</p>
+<p>原文：<a href="http://filimanjaro.com/blog/2014/introducing-lazy-evaluation" target="_blank" rel="external">How to Speed Up Lo-Dash ×100? Introducing Lazy Evaluation</a></p>
+</blockquote>
+<p>我时常觉得像<code>Lo-Dash</code>这样优秀的库已经无法再优化了。它整合了各种<a href="https://www.youtube.com/watch?v=NthmeLEhDDM" target="_blank" rel="external">奇技淫巧</a>已经将JavaScript的性能开发到了极限。它使用了最快速的语句，优化的算法，甚至还会在发版前做性能测试以保证回归没问题。</p>
+]]>
+    
+    </summary>
+    
+      <category term="JavaScript" scheme="http://jsbear.baidu.com/tags/JavaScript/"/>
+    
+      <category term="性能优化" scheme="http://jsbear.baidu.com/tags/%E6%80%A7%E8%83%BD%E4%BC%98%E5%8C%96/"/>
+    
+      <category term="译文" scheme="http://jsbear.baidu.com/categories/%E8%AF%91%E6%96%87/"/>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[Hello World]]></title>
+    <link href="http://jsbear.baidu.com/2014/10/22/hello-world/"/>
+    <id>http://jsbear.baidu.com/2014/10/22/hello-world/</id>
+    <published>2014-10-22T14:16:32.000Z</published>
+    <updated>2014-12-01T11:07:36.393Z</updated>
+    <content type="html"><![CDATA[<p class="text-success">Welcome, dude!</p>
+
+<h2 id="初见/Intro">初见/Intro</h2>
+<p><span class="dropcap">这</span>是使用<a href="http://hexo.io/" target="_blank" rel="external">Hexo</a>搭建的静态站点，基于<a href="http://nodejs.org/" target="_blank" rel="external">Node.js</a>，内容采用<a href="http://daringfireball.net/projects/markdown/syntax" target="_blank" rel="external">Markdown</a> 撰写。</p>
+<p>这里，我们进行知识分享扩散，文档整理存放，项目展示介绍。随着时间的推移，会沉淀更多的内容。</p>
+<p>时间就像一坛尘封的酒酿，若干年后，就会发现它的醇香。</p>
+<p>这里也是。</p>
+<a id="more"></a>
+
+<h2 id="本地运行/Run">本地运行/Run</h2>
+<p>下面的步骤可以让你快速安装环境，运行本站点。</p>
+<div class="alert alert-info"><i class="fa fa-info"></i>  <p>在正式开始前，你需要以下原料：</p>
+<ul>
+<li><a href="http://nodejs.org/" target="_blank" rel="external">Node.js</a> </li>
+<li><a href="http://git-scm.com/" target="_blank" rel="external">Git</a></li>
+</ul>
+</div>
+
+<h3 id="Fork_项目&amp;_获取源码">Fork 项目&amp; 获取源码</h3>
+<p>首先在Github fork本项目,然后将fork的代码克隆到本地。</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">mkdir jsbear</div><div class="line"><span class="built_in">cd</span> jsbear</div><div class="line">git clone https://github.com/{你的github用户名}/jsbear.git</div></pre></td></tr></table></figure>
+
+<h3 id="安装Hexo">安装Hexo</h3>
+<p>本地安装Hexo静态站点生成器。</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">npm install -g hexo</div></pre></td></tr></table></figure>
+
+<h3 id="安装依赖包">安装依赖包</h3>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">npm install</div><div class="line"><span class="comment"># 或者</span></div><div class="line">npm i</div></pre></td></tr></table></figure>
+
+<h3 id="启动服务器">启动服务器</h3>
+<p>准备好了吗？使用下面的命令，来打开站点吧！</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">hexo server</div><div class="line"><span class="comment"># 或者</span></div><div class="line">hexo s</div></pre></td></tr></table></figure>
+
+<p>服务器启动后，在浏览器地址栏输入<code>localhost</code> 进行访问。</p>
+<div class="alert alert-info"><i class="fa fa-info"></i>  <ul>
+<li>项目配置文件已经默认将端口设置为80，所以无需在<code>localhost</code>后加端口访问了</li>
+<li>服务器启动后可以按「Ctrl+C」将其停止</li>
+</ul>
+</div>
+
+<h2 id="书写/Writing">书写/Writing</h2>
+<p>当本地运行起来后，You are ready to go!<br>以下步骤让你学会书写并且时实预览效果。</p>
+<h3 id="创建新贴">创建新贴</h3>
+<p>使用如下命令创建新贴。</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">hexo new <span class="string">"My New Post"</span> <span class="comment">#这里标题最好用英文</span></div></pre></td></tr></table></figure>
+
+<p>它会在项目的<code>source/_posts/</code> 路径下创建一个时间加文章标题的<code>.md</code> 文件。我在这个文件中书写文章内容。</p>
+<h3 id="文章选项">文章选项</h3>
+<p>上面方法创建的文件中，头部包含了该篇文章的一些配置信息，所以你看到的应该是下面这个样子：</p>
+<figure class="highlight markdown"><figcaption><span>以本文的头部信息作示例</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line">title: Hello World  #文章的标题，这里可以换成中文</div><div class="line">toc: true   #是否显示文章目录，即右侧自动高亮的目录树</div><div class="line">dropcap: false  #是否启用drocap，类似报刊杂志首字增大的效果</div><div class="line">date: 2014-10-22 14:16:32   #文章创建的时间，匆改</div><div class="line">author: wayou   #需要显示的作者名，可选</div><div class="line">feature: asset/posts/2014-10-22-hello-world/hexo_logo.png    #显示在首页的文章头图，如果不需要可以去掉此项</div><div class="line">description: 本文纯粹吐槽 #显示在文章顶部的描述，可选</div><div class="line">categories: 文档  #文章分类，可选</div><div class="line">tags:   #文章标签，可选</div><div class="line"><span class="bullet">- </span>hexo</div><div class="line"><span class="header">- markdown</span></div><div class="line">---</div><div class="line"></div><div class="line">这里开始正文</div><div class="line"></div><div class="line"><span class="xml"><span class="comment">&lt;!-- more --&gt;</span></span>  #在正文中写了此注释，则注释前的内容将作为文章摘要显示在首页</div><div class="line"></div><div class="line">这里继续正文</div></pre></td></tr></table></figure>
+
+<h3 id="句法">句法</h3>
+<p>使用Markdown句法，我们可以很方便地写出简单优雅的排版。<br>如果你未曾了解过，让我们一起来简单熟悉一些常用MD句法。如果你已经了解，则路过。</p>
+<h4 id="标题">标题</h4>
+<p>在MD中，以<code>#</code>号开头来标识这一行是标题，个数对应HTML中<code>&lt;h1&gt;</code>到<code>&lt;h6&gt;</code>，这个很好理解。</p>
+<div class="alert alert-info"><i class="fa fa-info"></i>  <p>为了不影响左边文章目录，下面的示例省去了一二三四级标题</p>
+</div>
+
+<figure class="highlight markdown"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="header">##### 五级标题</span></div><div class="line"><span class="header">###### 六级标题</span></div></pre></td></tr></table></figure>
+
+<p>结果：</p>
+<h5 id="五级标题">五级标题</h5>
+<h6 id="六级标题">六级标题</h6>
+<h4 id="链接与图片">链接与图片</h4>
+<p>链接与图片是书写丰富文章所必备的元素，下面我们来看看。</p>
+<h5 id="链接">链接</h5>
+<p>MD中链接句法为方括号包裹链接文字，圆括号包裹链接地址。大家看下面的示例感受下。</p>
+<figure class="highlight markdown"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">[<span class="link_label">Hi, 约么？</span>](<span class="link_url">http://shurufa.baidu.com/</span>)</div></pre></td></tr></table></figure>
+
+<p>结果：<br><a href="http://shurufa.baidu.com/" target="_blank" rel="external">Hi, 约么？</a></p>
+<p><br></p>
+<h5 id="图片">图片</h5>
+<p>图文并茂的页面让人更能够赏心悦目。所以你应该不会吝啬多放几张图片。</p>
+<p>MD中图片的写法与链接极其相似，只是链接前端多了个叹号，仅此而以。</p>
+<p>同样，我们看一个示例感受下。</p>
+<p>美图将至，屏住呼吸。</p>
+<figure class="highlight markdown"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">![<span class="link_label">bigger that bigger</span>](<span class="link_url">/jsbear/asset/posts/2014-10-22-hello-world/hexo_logo.png</span>)</div></pre></td></tr></table></figure>
+
+<p>结果：<br><img src="/jsbear/asset/posts/2014-10-22-hello-world/btb.jpg" alt="bigger that bigger"></p>
+<h4 id="强调与斜体">强调与斜体</h4>
+<p>关于这两者，我们分别都有两种选择，请看下面的示例。</p>
+<h5 id="斜体">斜体</h5>
+<figure class="highlight markdown"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="emphasis">*single asterisks*</span></div><div class="line"></div><div class="line"><span class="emphasis">_single underscores_</span></div></pre></td></tr></table></figure>
+
+<p>结果：</p>
+<p><em>single asterisks</em></p>
+<p><em>single underscores</em></p>
+<h5 id="强调">强调</h5>
+<figure class="highlight markdown"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="strong">**double asterisks**</span></div><div class="line"></div><div class="line"><span class="strong">__double underscores__</span></div></pre></td></tr></table></figure>
+
+<p>结果</p>
+<p><strong>double asterisks</strong></p>
+<p><strong>double underscores</strong></p>
+<h4 id="列表">列表</h4>
+<p>通过列表表达观点，列举论据，显得思路清晰，表达流畅，更能说服读者。<br>在MD中，列表可以通过如下形式实现。</p>
+<h5 id="无序列表">无序列表</h5>
+<p>下面是无序列表的示例</p>
+<figure class="highlight markdown"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="bullet">* </span>列表项1</div><div class="line"><span class="bullet">* </span>列表项2</div><div class="line"><span class="bullet">* </span>列表项3</div><div class="line"></div><div class="line"><span class="header">#另一种写法</span></div><div class="line"><span class="bullet">- </span>列表项1</div><div class="line"><span class="bullet">- </span>列表项2</div><div class="line"><span class="bullet">- </span>列表项3</div></pre></td></tr></table></figure>
+
+<ul>
+<li>列表项1</li>
+<li>列表项2</li>
+<li>列表项3</li>
+</ul>
+<ul>
+<li>列表项1</li>
+<li>列表项2</li>
+<li>列表项3</li>
+</ul>
+<p><br></p>
+<h5 id="有序列表">有序列表</h5>
+<p>下面是有序列表的示例</p>
+<figure class="highlight markdown"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="bullet">1. </span>列表项1</div><div class="line"><span class="bullet">2. </span>列表项2</div><div class="line"><span class="bullet">3. </span>列表项3</div></pre></td></tr></table></figure>
+
+<ol>
+<li>列表项1</li>
+<li>列表项2</li>
+<li>列表项3</li>
+</ol>
+<p><br></p>
+<h5 id="嵌套列表">嵌套列表</h5>
+<p>下面是列表嵌套的示例</p>
+<figure class="highlight markdown"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="bullet">1. </span>列表项1</div><div class="line"><span class="code">    * 项目1的子项</span></div><div class="line"><span class="code">    * 项目1的子项</span></div><div class="line"><span class="code">    * 项目1的子项</span></div><div class="line"><span class="bullet">2. </span>列表项2</div><div class="line"><span class="code">    * 项目2的子项</span></div><div class="line"><span class="code">    * 项目2的子项</span></div><div class="line"><span class="code">    * 项目2的子项</span></div><div class="line"><span class="bullet">3. </span>列表项3</div></pre></td></tr></table></figure>
+
+<ol>
+<li>列表项1<ul>
+<li>项目1的子项</li>
+<li>项目1的子项</li>
+<li>项目1的子项</li>
+</ul>
+</li>
+<li>列表项2<ul>
+<li>项目2的子项</li>
+<li>项目2的子项</li>
+<li>项目2的子项</li>
+</ul>
+</li>
+<li>列表项3</li>
+</ol>
+<h4 id="代码">代码</h4>
+<p>在MD中，书写代码块也是非常便捷的，句法如下：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">``` <span class="attr_selector">[language]</span> <span class="attr_selector">[title]</span> <span class="attr_selector">[url]</span> <span class="attr_selector">[link text]</span></div><div class="line"><span class="tag">code</span> <span class="tag">goes</span> <span class="tag">here</span></div><div class="line">```</div></pre></td></tr></table></figure>
+
+<p>或者：</p>
+<figure class="highlight"><pre>{% code [title] [lang:language] [url] [link text] %}<br>code goes here<br>{% endcode %}<br></pre></figure>
+
+
+<p>一个JS代码的示例：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">`<span class="javascript"></span>``<span class="javascript">javascript _.compact https:<span class="comment">//lodash.com/docs  lodash.js</span></span></div><div class="line">_.compact([<span class="number">0</span>, <span class="number">1</span>, <span class="literal">false</span>, <span class="number">2</span>, <span class="string">''</span>, <span class="number">3</span>]);</div><div class="line"><span class="comment">// → [1, 2, 3]</span></div><div class="line">``<span class="javascript"></span>`</div></pre></td></tr></table></figure>
+
+<p>结果：</p>
+<figure class="highlight javascript"><figcaption><span>_.compact</span><a href="https://lodash.com/docs" target="_blank" rel="external">lodash.js</a></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">_.compact([<span class="number">0</span>, <span class="number">1</span>, <span class="literal">false</span>, <span class="number">2</span>, <span class="string">''</span>, <span class="number">3</span>]);</div><div class="line"><span class="comment">// → [1, 2, 3]</span></div></pre></td></tr></table></figure>
+
+<h4 id="引用">引用</h4>
+<p>引经据典是另一种增强说服力，彰显才识的方法。<br>MD中书写引用可以用如下简便的方式</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="input"><span class="prompt">&gt; 原谅我这一生不鸡放纵爱自由</span></span></div><div class="line">&gt; 也会怕有一天会跌倒</div></pre></td></tr></table></figure>
+
+<p>结果</p>
+<blockquote>
+<p>原谅我这一生不鸡放纵爱自由<br>也会怕有一天会跌倒</p>
+</blockquote>
+<p>也可以用以下方式书写更加健壮的引用，带出处，带连接。</p>
+<figure class="highlight"><pre>{% blockquote @风一直在吹 <a href="https://twitter.com/devdocs/status/356095192085962752" target="_blank" rel="external">https://twitter.com/devdocs/status/356095192085962752</a> %}<br>我这一生都在输，因为我不断战胜自己<br>{% endblockquote %}<br></pre></figure>
+
+
+<p>结果</p>
+<blockquote>
+
+<p>我这一生都在输，因为我不断战胜自己</p>
+<footer><strong>@风一直在吹</strong><cite><a href="https://twitter.com/devdocs/status/356095192085962752" target="_blank" rel="external">twitter.com/devdocs/status/&hellip;</a></cite></footer></blockquote>
+
+
+<h4 id="Bootstrap_标签">Bootstrap 标签</h4>
+<p>除了常规的MD句法，本主题内还可以书写一些Bootstrap句法，以此来让页面更加漂亮。<br>本主题基于<a href="https://github.com/wzpan/hexo-theme-freemind" target="_blank" rel="external">freemind</a>, 使用了其中的<a href="https://github.com/wzpan/hexo-tag-bootstrap" target="_blank" rel="external">hexo-tag-bootstrap</a>。</p>
+<p>具体信息可以访问<a href="http://hahack.tk/hexo-theme-freemind/2014/03/16/tag-plugins-cn/" target="_blank" rel="external">这里</a>查看，下面是文字颜色的简单示例。</p>
+<figure class="highlight"><pre>{% textcolor muted %}话说天下大势，分久必合，合久必分{% endtextcolor %}<br>{% textcolor primary %}话说天下大势，分久必合，合久必分{% endtextcolor %}<br>{% textcolor success %}话说天下大势，分久必合，合久必分{% endtextcolor %}<br>{% textcolor info %}话说天下大势，分久必合，合久必分{% endtextcolor %}<br>{% textcolor warning %}话说天下大势，分久必合，合久必分{% endtextcolor %}<br>{% textcolor danger %}话说天下大势，分久必合，合久必分{% endtextcolor %}<br></pre></figure>
+
+
+<p>结果：</p>
+<p class="text-muted">话说天下大势，分久必合，合久必分</p><p class="text-primary">话说天下大势，分久必合，合久必分</p><p class="text-success">话说天下大势，分久必合，合久必分</p><p class="text-info">话说天下大势，分久必合，合久必分</p><p class="text-warning">话说天下大势，分久必合，合久必分</p><p class="text-danger">话说天下大势，分久必合，合久必分</p>
+
+<h3 id="预览">预览</h3>
+<p>书写过程中，你可能想要进行预览与效果查看，还记得之前我们已经将服务器在本地启动，直接刷新页面即可看到新增的文章入写入的改动。</p>
+<p>但由于一些不为人知的原因，偶尔可能会出现更改未现效果，或者同名文章冗余的Bug。不要担心，<code>Ctrl+C</code> 停掉服务器，输入下面的命令清理一下缓存，再重新启动服务器。</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">hexo clean <span class="comment">#删除之前生成的文件</span></div><div class="line">hexo s <span class="comment">#再次启动服务器进行预览</span></div></pre></td></tr></table></figure>
+
+<h2 id="内容管理/_Content_Mgmt">内容管理/ Content Mgmt</h2>
+<p>在书写文章过程中，我们需要的一些资源，比如附件，图片等，约定放在<code>source/asset/</code> 下面。</p>
+<p>在此路径下新建一个与该文章名字一样的文件夹，里面存放该文章需要用到的全部资源。</p>
+<p>而<code>asset</code>下面还有一个<code>common</code>文件夹，里面存放一些共用的资源，比如你写了一篇关于HTML5的文章，并且希望在首页显示一个HTML5 logo的缩略图，那么这个图片就应该存放在<code>common</code>里，因为另外的人以后可能也会分享相关文章，这时他就不必另取图片，而直接用<code>common</code>里的即可。</p>
+<h2 id="提交更改/_Pull_request">提交更改/ Pull request</h2>
+<p>完成了你的内容新增并且本地预览确认好效果后，我们来到提交步骤。</p>
+<h3 id="提交更改">提交更改</h3>
+<p>同时将改动后的项目源码提交到GitHub。</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">git status <span class="comment">#提交前最好查看一下文件变更</span></div><div class="line">git add --all</div><div class="line">git push origin master</div></pre></td></tr></table></figure>
+
+<p>接下来，</p>
+<p>将你的更改合并到源项目，也就是发起一个<code>pull request</code>。</p>
+<p>在Github上你fork的项目页面，点击<code>pull request</code>：<br><img src="/jsbear/asset/posts/2014-10-22-hello-world/create_pr.jpg" alt="create pr step1"></p>
+<p>来到创建页面：<br><img src="/jsbear/asset/posts/2014-10-22-hello-world/create_pr2.jpg" alt="create pr step2"></p>
+<p>填写相关描述或者省略：<br><img src="/jsbear/asset/posts/2014-10-22-hello-world/create_pr3.jpg" alt="create pr step3"></p>
+<p>之后便等待代码的<code>review</code>和合并吧！</p>
+<p><br><br>即刻出发，享受书写来带的乐趣吧！</p>
+<h1 id="附录/_Appendix">附录/ Appendix</h1>
+<ul>
+<li><a href="http://hexo.io/" target="_blank" rel="external">参见更多Hexo的信息</a></li>
+<li><a href="http://daringfireball.net/projects/markdown/syntax" target="_blank" rel="external">更加详尽的Markdown句法说明</a></li>
+</ul>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p class="text-success">Welcome, dude!</p>
+
+<h2 id="初见/Intro">初见/Intro</h2>
+<p><span class="dropcap">这</span>是使用<a href="http://hexo.io/" target="_blank" rel="external">Hexo</a>搭建的静态站点，基于<a href="http://nodejs.org/" target="_blank" rel="external">Node.js</a>，内容采用<a href="http://daringfireball.net/projects/markdown/syntax" target="_blank" rel="external">Markdown</a> 撰写。</p>
+<p>这里，我们进行知识分享扩散，文档整理存放，项目展示介绍。随着时间的推移，会沉淀更多的内容。</p>
+<p>时间就像一坛尘封的酒酿，若干年后，就会发现它的醇香。</p>
+<p>这里也是。</p>
+]]>
+    
+    </summary>
+    
+      <category term="hexo" scheme="http://jsbear.baidu.com/tags/hexo/"/>
+    
+      <category term="markdown" scheme="http://jsbear.baidu.com/tags/markdown/"/>
+    
+      <category term="文档" scheme="http://jsbear.baidu.com/categories/%E6%96%87%E6%A1%A3/"/>
+    
+  </entry>
+  
+</feed>
